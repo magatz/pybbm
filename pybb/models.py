@@ -245,8 +245,8 @@ class RenderableItem(models.Model):
 
 @python_2_unicode_compatible
 class Post(RenderableItem):
-    topic = models.ForeignKey(Topic, related_name='posts', verbose_name=_('Topic'))
-    user = models.ForeignKey(get_user_model_path(), related_name='posts', verbose_name=_('User'))
+    topic = UnsavedForeignKey(Topic, related_name='posts', verbose_name=_('Topic'))
+    user = UnsavedForeignKey(get_user_model_path(), related_name='posts', verbose_name=_('User'))
     created = models.DateTimeField(_('Created'), blank=True, db_index=True)
     updated = models.DateTimeField(_('Updated'), blank=True, null=True)
     user_ip = models.IPAddressField(_('User IP'), blank=True, default='0.0.0.0')
