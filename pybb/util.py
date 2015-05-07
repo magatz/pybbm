@@ -148,7 +148,7 @@ def get_pybb_profile_model():
     from pybb import defaults
 
     if defaults.PYBB_PROFILE_RELATED_NAME:
-        return getattr(get_user_model(), defaults.PYBB_PROFILE_RELATED_NAME).related.model
+        return getattr(get_user_model(), defaults.PYBB_PROFILE_RELATED_NAME).related.field.model
     else:
         return get_user_model()
 
