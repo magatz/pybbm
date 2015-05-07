@@ -24,6 +24,11 @@ try:
 except ImportError:
     pass
 
+class UnsavedForeignKey(models.ForeignKey):
+    # A ForeignKey which can point to an unsaved object
+    allow_unsaved_instance_assignment = True
+
+
 
 @python_2_unicode_compatible
 class Category(models.Model):
@@ -57,8 +62,8 @@ class Category(models.Model):
 
 @python_2_unicode_compatible
 class Forum(models.Model):
-    category = models.ForeignKey(Category, related_name='forums', verbose_name=_('Category'))
-    parent = models.ForeignKey('self', related_name='child_forums', verbose_name=_('Parent forum'),
+    category = UnsavedForeignKey(Category, related_name='forums', verbose_name=_('Category'))
+    parent = UnsavedForeignKey('self', related_name='child_forums', verbose_name=_('Parent forum'),
                                blank=True, null=True)
     name = models.CharField(_('Name'), max_length=80)
     position = models.IntegerField(_('Position'), blank=True, default=0)
@@ -132,11 +137,11 @@ class Topic(models.Model):
         (POLL_TYPE_MULTIPLE, _('Multiple answers')),
     )
 
-    forum = models.ForeignKey(Forum, related_name='topics', verbose_name=_('Forum'))
+    forum = UnsavedForeignKey(Forum, related_name='topics', verbose_name=_('Forum'))
     name = models.CharField(_('Subject'), max_length=255)
     created = models.DateTimeField(_('Created'), null=True)
     updated = models.DateTimeField(_('Updated'), null=True)
-    user = models.ForeignKey(get_user_model_path(), verbose_name=_('User'))
+    user = UnsavedForeignKey(get_user_model_path(), verbose_name=_('User'))
     views = models.IntegerField(_('Views count'), blank=True, default=0)
     sticky = models.BooleanField(_('Sticky'), blank=True, default=False)
     closed = models.BooleanField(_('Closed'), blank=True, default=False)
@@ -332,7 +337,7 @@ class Attachment(models.Model):
         verbose_name = _('Attachment')
         verbose_name_plural = _('Attachments')
 
-    post = models.ForeignKey(Post, verbose_name=_('Post'), related_name='attachments')
+    post = UnsavedForeignKey(Post, verbose_name=_('Post'), related_name='attachments')
     size = models.IntegerField(_('Size'))
     file = models.FileField(_('File'),
                             upload_to=FilePathGenerator(to=defaults.PYBB_ATTACHMENT_UPLOAD_TO))
@@ -377,8 +382,8 @@ class TopicReadTracker(models.Model):
     """
     Save per user topic read tracking
     """
-    user = models.ForeignKey(get_user_model_path(), blank=False, null=False)
-    topic = models.ForeignKey(Topic, blank=True, null=True)
+    user = UnsavedForeignKey(get_user_model_path(), blank=False, null=False)
+    topic = UnsavedForeignKey(Topic, blank=True, null=True)
     time_stamp = models.DateTimeField(auto_now=True)
 
     objects = TopicReadTrackerManager()
@@ -415,8 +420,8 @@ class ForumReadTracker(models.Model):
     """
     Save per user forum read tracking
     """
-    user = models.ForeignKey(get_user_model_path(), blank=False, null=False)
-    forum = models.ForeignKey(Forum, blank=True, null=True)
+    user = UnsavedForeignKey(get_user_model_path(), blank=False, null=False)
+    forum = UnsavedForeignKey(Forum, blank=True, null=True)
     time_stamp = models.DateTimeField(auto_now=True)
 
     objects = ForumReadTrackerManager()
@@ -429,7 +434,7 @@ class ForumReadTracker(models.Model):
 
 @python_2_unicode_compatible
 class PollAnswer(models.Model):
-    topic = models.ForeignKey(Topic, related_name='poll_answers', verbose_name=_('Topic'))
+    topic = UnsavedForeignKey(Topic, related_name='poll_answers', verbose_name=_('Topic'))
     text = models.CharField(max_length=255, verbose_name=_('Text'))
 
     class Meta:
@@ -452,8 +457,8 @@ class PollAnswer(models.Model):
 
 @python_2_unicode_compatible
 class PollAnswerUser(models.Model):
-    poll_answer = models.ForeignKey(PollAnswer, related_name='users', verbose_name=_('Poll answer'))
-    user = models.ForeignKey(get_user_model_path(), related_name='poll_answers', verbose_name=_('User'))
+    poll_answer = UnsavedForeignKey(PollAnswer, related_name='users', verbose_name=_('Poll answer'))
+    user = UnsavedForeignKey(get_user_model_path(), related_name='poll_answers', verbose_name=_('User'))
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
