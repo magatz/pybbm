@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    version='0.15.7',
+    version='0.16.1',
     description='PyBB Modified. Django forum application',
     long_description=open('README.rst').read(),
     author='Pavel Zhukov',
@@ -12,8 +12,6 @@ setup(
     include_package_data=True,
     package_data={'': ['pybb/templates', 'pybb/static']},
     install_requires=[
-        'markdown',
-        'bbcode',
         'django-annoying',
     ],
     test_suite='runtests.runtests',
@@ -27,6 +25,12 @@ setup(
         'License :: OSI Approved :: BSD License',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
         'Topic :: Internet :: WWW/HTTP :: Dynamic Content :: Message Boards',
         'Topic :: Software Development :: Libraries :: Python Modules',
     ],

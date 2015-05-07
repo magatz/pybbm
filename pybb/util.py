@@ -1,36 +1,132 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
+
 import os
-import re
+import warnings
 import uuid
+
+from django.utils.importlib import import_module
+from django.utils.six import string_types
 from django.utils.translation import ugettext as _
+
 from pybb.compat import get_username_field, get_user_model
+from pybb.defaults import (
+    PYBB_MARKUP, PYBB_MARKUP_ENGINES_PATHS,
+    PYBB_MARKUP_ENGINES, PYBB_QUOTE_ENGINES
+)
+from pybb.markup.base import BaseParser
+
+# TODO in the next major release : delete _MARKUP_ENGINES_FORMATTERS and _MARKUP_ENGINES_QUOTERS
+_MARKUP_ENGINES = {}
+_MARKUP_ENGINES_FORMATTERS = {}
+_MARKUP_ENGINES_QUOTERS = {}
+
+deprecated_func_warning = ('Deprecated function. Please configure correctly the PYBB_MARKUP_ENGINES_PATHS and'
+                           'use get_markup_engine().%(replace)s() instead of %(old)s()(content).'
+                           'In the next major release, this function will be deleted.')
+
+
+def resolve_class(name):
+    """ resolves a class function given as string, returning the function """
+    if not name:
+        return None
+    modname, funcname = name.rsplit('.', 1)
+    return getattr(import_module(modname), funcname)()
+
+
+def resolve_function(path):
+    if path:
+        path = path.split('.')
+        to_import = path.pop()
+        module = import_module('.'.join(path))
+        if module:
+            return getattr(module, to_import)
+    return None
+
+
+def get_markup_engine(name=None):
+    """
+    Returns the named markup engine instance, or the default one if name is not given.
+    This function will replace _get_markup_formatter and _get_markup_quoter in the
+    next major release.
+    """
+    name = name or PYBB_MARKUP
+    engine = _MARKUP_ENGINES.get(name)
+    if engine:
+        return engine
+    if name not in PYBB_MARKUP_ENGINES_PATHS:
+        engine = BaseParser()
+    else:
+        engine = PYBB_MARKUP_ENGINES[name]
+        # TODO In a near future, we should stop to support callable
+        if isinstance(engine, string_types):
+            # This is a path, import it
+            engine = resolve_class(engine)
+    _MARKUP_ENGINES[name] = engine
+    return engine
+
+
+# TODO In the next major release, delete this function
+def _get_markup_formatter(name=None):
+    """
+    Returns the named parse engine, or the default parser if name is not given.
+    """
+    warnings.warn(deprecated_func_warning % {'replace': 'format', 'old': '_get_markup_formatter'},
+                  DeprecationWarning)
+    name = name or PYBB_MARKUP
+
+    engine = _MARKUP_ENGINES_FORMATTERS.get(name)
+    if engine:
+        return engine
+    if name not in PYBB_MARKUP_ENGINES:
+        engine = BaseParser().format
+    else:
+        engine = PYBB_MARKUP_ENGINES[name]
+        if isinstance(engine, string_types):
+            # This is a path, import it
+            engine = resolve_class(engine).format
+
+    _MARKUP_ENGINES_FORMATTERS[name] = engine
+    return engine
+
+
+# TODO In the next major release, delete this function
+def _get_markup_quoter(name=None):
+    """
+    Returns the named quote engine, or the default quoter if name is not given.
+    """
+    warnings.warn(deprecated_func_warning % {'replace': 'quote', 'old': '_get_markup_quoter'},
+                  DeprecationWarning)
+    name = name or PYBB_MARKUP
+
+    engine = _MARKUP_ENGINES_QUOTERS.get(name)
+    if engine:
+        return engine
+
+    if name not in PYBB_QUOTE_ENGINES:
+        engine = BaseParser().quote
+    else:
+        engine = PYBB_QUOTE_ENGINES[name]
+        if isinstance(engine, string_types):
+            # This is a path, import it
+            engine = resolve_class(engine).quote
+
+    _MARKUP_ENGINES_QUOTERS[name] = engine
+    return engine
+
+
+def get_body_cleaner(name):
+    return resolve_function(name) if isinstance(name, string_types) else name
 
 
 def unescape(text):
     """
     Do reverse escaping.
     """
-    return text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', '\'')
-
-
-def filter_blanks(user, str):
-    """
-    Replace more than 3 blank lines with only 1 blank line
-    """
-    if user.is_staff:
-        return str
-    return re.sub(r'\n{2}\n+', '\n', str)
-
-
-def rstrip_str(user, str):
-    """
-    Replace strings with spaces (tabs, etc..) only with newlines
-    Remove blank line at the end
-    """
-    if user.is_staff:
-        return str
-    return '\n'.join([s.rstrip() for s in str.splitlines()])
+    escape_map = [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'), ('&#39;', '\'')]
+    for escape_values in escape_map:
+        text = text.replace(*escape_values)
+    return text
 
 
 def get_pybb_profile(user):
@@ -50,6 +146,7 @@ def get_pybb_profile(user):
 
 def get_pybb_profile_model():
     from pybb import defaults
+
     if defaults.PYBB_PROFILE_RELATED_NAME:
         return getattr(get_user_model(), defaults.PYBB_PROFILE_RELATED_NAME).related.model
     else:
@@ -68,6 +165,7 @@ class FilePathGenerator(object):
     Special class for generating random filenames
     Can be deconstructed for correct migration
     """
+
     def __init__(self, to, *args, **kwargs):
         self.to = to
 

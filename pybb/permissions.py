@@ -4,18 +4,9 @@ Extensible permission system for pybbm
 """
 
 from __future__ import unicode_literals
-from django.utils.importlib import import_module
 from django.db.models import Q
 
-from pybb import defaults
-from pybb.models import Topic, PollAnswerUser
-
-
-def _resolve_class(name):
-    """ resolves a class function given as string, returning the function """
-    if not name: return False
-    modname, funcname = name.rsplit('.', 1)
-    return getattr(import_module(modname), funcname)()
+from pybb import defaults, util
 
 
 class DefaultPermissionHandler(object):
@@ -102,8 +93,8 @@ class DefaultPermissionHandler(object):
     def may_vote_in_topic(self, user, topic):
         """ return True if `user` may unstick `topic` """
         return (
-            user.is_authenticated() and topic.poll_type != Topic.POLL_TYPE_NONE and not topic.closed and
-            not PollAnswerUser.objects.filter(poll_answer__topic=topic, user=user).exists()
+            user.is_authenticated() and topic.poll_type != topic.POLL_TYPE_NONE and not topic.closed and
+            not user.poll_answers.filter(poll_answer__topic=topic).exists()
         )
 
     def may_create_post(self, user, topic):
@@ -123,6 +114,10 @@ class DefaultPermissionHandler(object):
     def may_post_as_admin(self, user):
         """ return True if `user` may post as admin """
         return user.is_staff
+
+    def may_subscribe_topic(self, user, forum):
+        """ return True if `user` is allowed to subscribe to a `topic` """
+        return not defaults.PYBB_DISABLE_SUBSCRIPTIONS
 
     #
     # permission checks on posts
@@ -185,4 +180,4 @@ class DefaultPermissionHandler(object):
         return True
 
 
-perms = _resolve_class(defaults.PYBB_PERMISSION_HANDLER)
+perms = util.resolve_class(defaults.PYBB_PERMISSION_HANDLER)

@@ -31,7 +31,10 @@ except ImportError:
     raise Exception('PyBB requires lxml for self testing')
 
 from pybb import defaults
-from pybb.models import Topic, TopicReadTracker, Forum, ForumReadTracker, Post, Category, PollAnswer, Profile
+from pybb.models import Topic, TopicReadTracker, Forum, ForumReadTracker, Post, Category, PollAnswer
+
+
+Profile = util.get_pybb_profile_model()
 
 __author__ = 'zeus'
 
@@ -132,27 +135,6 @@ class FeaturesTest(TestCase, SharedTestModule):
         self.assertEqual(response.context['paginator'].num_pages,
                          int((defaults.PYBB_FORUM_PAGE_SIZE + 3) / defaults.PYBB_FORUM_PAGE_SIZE) + 1)
 
-    def test_default_bbcode_processor(self):
-        bbcode_to_html_map = [
-            ['[b]bold[/b]', '<strong>bold</strong>'],
-            ['[i]italic[/i]', '<em>italic</em>'],
-            ['[u]underline[/u]', '<u>underline</u>'],
-            ['[s]striked[/s]', '<strike>striked</strike>'],
-            ['[img]http://domain.com/image.png[/img]', '<img src="http://domain.com/image.png"></img>',
-                                                       '<img src="http://domain.com/image.png">'],
-            ['[url=google.com]search in google[/url]', '<a href="http://google.com">search in google</a>'],
-            ['http://google.com', '<a href="http://google.com">http://google.com</a>'],
-            ['[list][*]1[*]2[/list]', '<ul><li>1</li><li>2</li></ul>'],
-            ['[list=1][*]1[*]2[/list]', '<ol><li>1</li><li>2</li></ol>',
-                                        '<ol style="list-style-type:decimal;"><li>1</li><li>2</li></ol>'],
-            ['[quote="post author"]quote[/quote]', '<blockquote><em>post author</em><br>quote</blockquote>'],
-            ['[code]code[/code]', '<div class="code"><pre>code</pre></div>',
-                                  '<pre><code>code</code></pre>'],
-        ]
-
-        for item in bbcode_to_html_map:
-            self.assertIn(defaults.PYBB_MARKUP_ENGINES['bbcode'](item[0]), item[1:])
-
     def test_bbcode_and_topic_title(self):
         response = self.client.get(self.topic.get_absolute_url())
         tree = html.fromstring(response.content)
@@ -171,6 +153,48 @@ class FeaturesTest(TestCase, SharedTestModule):
         response = self.client.post(add_topic_url, data=values, follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertTrue(Topic.objects.filter(name='new topic name').exists())
+
+    def test_topic_read_before_post_addition(self):
+        """
+        Test if everything is okay when :
+            - user A create the topic
+            - but before associated post is created, user B display the forum
+        """
+        topic = Topic(name='xtopic', forum=self.forum, user=self.user)
+        topic.save()
+        #topic is saved, but post is not yet created at this time
+
+        #an other user is displaing the forum before the post creation
+        user_ann = User.objects.create_user('ann', 'ann@localhost', 'ann')
+        client = Client()
+        client.login(username='ann', password='ann')
+
+        self.assertEqual(client.get(topic.get_absolute_url()).status_code, 404)
+        self.assertEqual(topic.forum.post_count, 1)
+        self.assertEqual(topic.forum.topic_count, 1)
+        #do we need to correct this ?
+        #self.assertEqual(topic.forum.topics.count(), 1)
+        self.assertEqual(topic.post_count, 0)
+        
+        #Now, TopicReadTracker is not created because the topic detail view raise a 404
+        #If its creation is not finished. So we create it manually to add a test, just in case
+        #we have an other way where TopicReadTracker could be set for a not complete topic.
+        TopicReadTracker.objects.create(user=user_ann, topic=topic, time_stamp=topic.created)
+        
+        #before correction, raised TypeError: can't compare datetime.datetime to NoneType
+        pybb_topic_unread([topic,], user_ann)
+        
+        #before correction, raised IndexError: list index out of range
+        last_post = topic.last_post
+        
+        #post creation now.
+        Post(topic=topic, user=self.user, body='one').save()
+        
+        self.assertEqual(client.get(topic.get_absolute_url()).status_code, 200)
+        self.assertEqual(topic.forum.post_count, 2)
+        self.assertEqual(topic.forum.topic_count, 2)
+        self.assertEqual(topic.forum.topics.count(), 2)
+        self.assertEqual(topic.post_count, 1)
 
     def test_post_deletion(self):
         post = Post(topic=self.topic, user=self.user, body='bbcode [b]test[/b]')
@@ -880,8 +904,14 @@ class FeaturesTest(TestCase, SharedTestModule):
         user2 = User.objects.create_user(username='user2', password='user2', email='user2@someserver.com')
         user3 = User.objects.create_user(username='user3', password='user3', email='user3@example.com')
         client = Client()
+
         client.login(username='user2', password='user2')
-        response = client.get(reverse('pybb:add_subscription', args=[self.topic.id]), follow=True)
+        subscribe_url = reverse('pybb:add_subscription', args=[self.topic.id])
+        response = client.get(self.topic.get_absolute_url())
+        subscribe_links = html.fromstring(response.content).xpath('//a[@href="%s"]' % subscribe_url)
+        self.assertEqual(len(subscribe_links), 1)
+
+        response = client.get(subscribe_url, follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn(user2, self.topic.subscribers.all())
 
@@ -897,7 +927,7 @@ class FeaturesTest(TestCase, SharedTestModule):
         self.assertEqual(response.status_code, 200)
         new_post = Post.objects.order_by('-id')[0]
 
-        # there should only be one email in the outbox (to user2)
+        # there should only be one email in the outbox (to user2) because @example.com are ignored
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to[0], user2.email)
         self.assertTrue([msg for msg in mail.outbox if new_post.get_absolute_url() in msg.body])
@@ -908,6 +938,75 @@ class FeaturesTest(TestCase, SharedTestModule):
         response = client.get(reverse('pybb:delete_subscription', args=[self.topic.id]), follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(user2, self.topic.subscribers.all())
+
+    def test_subscription_disabled(self):
+        orig_conf = defaults.PYBB_DISABLE_SUBSCRIPTIONS
+        defaults.PYBB_DISABLE_SUBSCRIPTIONS = True
+
+        user2 = User.objects.create_user(username='user2', password='user2', email='user2@someserver.com')
+        user3 = User.objects.create_user(username='user3', password='user3', email='user3@someserver.com')
+        client = Client()
+
+        client.login(username='user2', password='user2')
+        subscribe_url = reverse('pybb:add_subscription', args=[self.topic.id])
+        response = client.get(self.topic.get_absolute_url())
+        subscribe_links = html.fromstring(response.content).xpath('//a[@href="%s"]' % subscribe_url)
+        self.assertEqual(len(subscribe_links), 0)
+        
+        response = client.get(subscribe_url, follow=True)
+        self.assertEqual(response.status_code, 403)
+
+        self.topic.subscribers.add(user3)
+
+        # create a new reply (with another user)
+        self.client.login(username='zeus', password='zeus')
+        add_post_url = reverse('pybb:add_post', args=[self.topic.id])
+        response = self.client.get(add_post_url)
+        values = self.get_form_values(response)
+        values['body'] = 'test subscribtion юникод'
+        response = self.client.post(add_post_url, values, follow=True)
+        self.assertEqual(response.status_code, 200)
+        new_post = Post.objects.order_by('-id')[0]
+
+        # there should be one email in the outbox (user3)
+        #because already subscribed users will still receive notifications.
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to[0], user3.email)
+
+        defaults.PYBB_DISABLE_SUBSCRIPTIONS = orig_conf
+
+    def test_notifications_disabled(self):
+        orig_conf = defaults.PYBB_DISABLE_NOTIFICATIONS
+        defaults.PYBB_DISABLE_NOTIFICATIONS = True
+
+        user2 = User.objects.create_user(username='user2', password='user2', email='user2@someserver.com')
+        user3 = User.objects.create_user(username='user3', password='user3', email='user3@someserver.com')
+        client = Client()
+
+        client.login(username='user2', password='user2')
+        subscribe_url = reverse('pybb:add_subscription', args=[self.topic.id])
+        response = client.get(self.topic.get_absolute_url())
+        subscribe_links = html.fromstring(response.content).xpath('//a[@href="%s"]' % subscribe_url)
+        self.assertEqual(len(subscribe_links), 1)
+        response = client.get(subscribe_url, follow=True)
+        self.assertEqual(response.status_code, 200)
+
+        self.topic.subscribers.add(user3)
+
+        # create a new reply (with another user)
+        self.client.login(username='zeus', password='zeus')
+        add_post_url = reverse('pybb:add_post', args=[self.topic.id])
+        response = self.client.get(add_post_url)
+        values = self.get_form_values(response)
+        values['body'] = 'test subscribtion юникод'
+        response = self.client.post(add_post_url, values, follow=True)
+        self.assertEqual(response.status_code, 200)
+        new_post = Post.objects.order_by('-id')[0]
+
+        # there should be no email in the outbox
+        self.assertEqual(len(mail.outbox), 0)
+        
+        defaults.PYBB_DISABLE_NOTIFICATIONS = orig_conf
 
     def test_topic_updated(self):
         topic = Topic(name='etopic', forum=self.forum, user=self.user)
@@ -1038,6 +1137,7 @@ class AnonymousTest(TestCase, SharedTestModule):
         self.category = Category.objects.create(name='foo')
         self.forum = Forum.objects.create(name='xfoo', description='bar', category=self.category)
         self.topic = Topic.objects.create(name='etopic', forum=self.forum, user=self.user)
+        self.post = Post.objects.create(body='body post', topic=self.topic, user=self.user)
         add_post_permission = Permission.objects.get_by_natural_key('add_post', 'pybb', 'post')
         self.user.user_permissions.add(add_post_permission)
 
@@ -1495,20 +1595,174 @@ class CustomPermissionHandler(permissions.DefaultPermissionHandler):
         return False
 
 
+class MarkupParserTest(TestCase, SharedTestModule):
+
+    def setUp(self):
+        # Reinit Engines because they are stored in memory and the current bbcode engine stored
+        # may be the old one, depending the test order exec.
+        self.ORIG_PYBB_MARKUP_ENGINES = util.PYBB_MARKUP_ENGINES
+        self.ORIG_PYBB_QUOTE_ENGINES = util.PYBB_QUOTE_ENGINES
+        util.PYBB_MARKUP_ENGINES = {
+            'bbcode': 'pybb.markup.bbcode.BBCodeParser',  # default parser
+            'bbcode_custom': 'test.test_project.markup_parsers.CustomBBCodeParser',  # overrided default parser
+            'liberator': 'test.test_project.markup_parsers.LiberatorParser',  # completely new parser
+            'fake': 'pybb.markup.base.BaseParser',  # base parser
+            'markdown': defaults.markdown  # old-style callable parser,
+        }
+        util.PYBB_QUOTE_ENGINES = {
+            'bbcode': 'pybb.markup.bbcode.BBCodeParser',  # default parser
+            'bbcode_custom': 'test.test_project.markup_parsers.CustomBBCodeParser',  # overrided default parser
+            'liberator': 'test.test_project.markup_parsers.LiberatorParser',  # completely new parser
+            'fake': 'pybb.markup.base.BaseParser',  # base parser
+            'markdown': lambda text, username="": '>' + text.replace('\n', '\n>').replace('\r', '\n>') + '\n'  # old-style callable parser
+        }
+
+    def tearDown(self):
+        util._MARKUP_ENGINES = {}
+        util._QUOTE_ENGINES = {}
+        util.PYBB_MARKUP_ENGINES = self.ORIG_PYBB_MARKUP_ENGINES
+        util.PYBB_QUOTE_ENGINES = self.ORIG_PYBB_QUOTE_ENGINES
+
+    def test_markup_engines(self):
+
+        def _test_engine(parser_name, text_to_html_map):
+            for item in text_to_html_map:
+                self.assertIn(util._get_markup_formatter(parser_name)(item[0]), item[1:])
+
+        text_to_html_map = [
+            ['[b]bold[/b]', '<strong>bold</strong>'],
+            ['[i]italic[/i]', '<em>italic</em>'],
+            ['[u]underline[/u]', '<u>underline</u>'],
+            ['[s]striked[/s]', '<strike>striked</strike>'],
+            [
+                '[img]http://domain.com/image.png[/img]',
+                '<img src="http://domain.com/image.png"></img>',
+                '<img src="http://domain.com/image.png">'
+            ],
+            ['[url=google.com]search in google[/url]', '<a href="http://google.com">search in google</a>'],
+            ['http://google.com', '<a href="http://google.com">http://google.com</a>'],
+            ['[list][*]1[*]2[/list]', '<ul><li>1</li><li>2</li></ul>'],
+            [
+                '[list=1][*]1[*]2[/list]',
+                '<ol><li>1</li><li>2</li></ol>',
+                '<ol style="list-style-type:decimal;"><li>1</li><li>2</li></ol>'
+            ],
+            ['[quote="post author"]quote[/quote]', '<blockquote><em>post author</em><br>quote</blockquote>'],
+            [
+                '[code]code[/code]',
+                '<div class="code"><pre>code</pre></div>',
+                '<pre><code>code</code></pre>']
+            ,
+        ]
+        _test_engine('bbcode', text_to_html_map)
+
+        text_to_html_map = text_to_html_map + [
+            ['[ul][li]1[/li][li]2[/li][/ul]', '<ul><li>1</li><li>2</li></ul>'],
+            [
+                '[youtube]video_id[/youtube]',
+                (
+                    '<iframe src="http://www.youtube.com/embed/video_id?wmode=opaque" '
+                    'data-youtube-id="video_id" allowfullscreen="" frameborder="0" '
+                    'height="315" width="560"></iframe>'
+                )
+            ],
+        ]
+        _test_engine('bbcode_custom', text_to_html_map)
+
+        text_to_html_map = [
+            ['Windows and Mac OS are wonderfull OS !', 'GNU Linux and FreeBSD are wonderfull OS !'],
+            ['I love PHP', 'I love Python'],
+        ]
+        _test_engine('liberator', text_to_html_map)
+
+        text_to_html_map = [
+            ['[b]bold[/b]', '[b]bold[/b]'],
+            ['*italic*', '*italic*'],
+        ]
+        _test_engine('fake', text_to_html_map)
+        _test_engine('not_existent', text_to_html_map)
+
+        text_to_html_map = [
+            ['**bold**', '<p><strong>bold</strong></p>'],
+            ['*italic*', '<p><em>italic</em></p>'],
+            [
+                '![alt text](http://domain.com/image.png title)',
+                '<p><img alt="alt text" src="http://domain.com/image.png" title="title" /></p>'
+            ],
+            [
+                '[search in google](https://www.google.com)',
+                '<p><a href="https://www.google.com">search in google</a></p>'
+            ],
+            [
+                '[google] some text\n[google]: https://www.google.com',
+                '<p><a href="https://www.google.com">google</a> some text</p>'
+            ],
+            ['* 1\n* 2', '<ul>\n<li>1</li>\n<li>2</li>\n</ul>'],
+            ['1. 1\n2. 2', '<ol>\n<li>1</li>\n<li>2</li>\n</ol>'],
+            ['> quote', '<blockquote>\n<p>quote</p>\n</blockquote>'],
+            ['```\ncode\n```', '<p><code>code</code></p>'],
+        ]
+        _test_engine('markdown', text_to_html_map)
+
+    def test_quote_engines(self):
+
+        def _test_engine(parser_name, text_to_quote_map):
+            for item in text_to_quote_map:
+                self.assertEqual(util._get_markup_quoter(parser_name)(item[0]), item[1])
+                self.assertEqual(util._get_markup_quoter(parser_name)(item[0], 'username'), item[2])
+
+        text_to_quote_map = [
+            ['quote text', '[quote=""]quote text[/quote]\n', '[quote="username"]quote text[/quote]\n']
+        ]
+        _test_engine('bbcode', text_to_quote_map)
+        _test_engine('bbcode_custom', text_to_quote_map)
+
+        text_to_quote_map = [
+            ['quote text', 'quote text', 'posted by: username\nquote text']
+        ]
+        _test_engine('liberator', text_to_quote_map)
+
+        text_to_quote_map = [
+            ['quote text', 'quote text', 'quote text']
+        ]
+        _test_engine('fake', text_to_quote_map)
+        _test_engine('not_existent', text_to_quote_map)
+
+        text_to_quote_map = [
+            ['quote\r\ntext', '>quote\n>\n>text\n', '>quote\n>\n>text\n']
+        ]
+        _test_engine('markdown', text_to_quote_map)
+
+    def test_body_cleaners(self):
+        user = User.objects.create_user('zeus', 'zeus@localhost', 'zeus')
+        staff = User.objects.create_user('staff', 'staff@localhost', 'staff')
+        staff.is_staff = True
+        staff.save()
+
+        from pybb.markup.base import rstrip_str
+        cleaners_map = [
+            ['pybb.markup.base.filter_blanks', 'some\n\n\n\ntext\n\nwith\nnew\nlines', 'some\ntext\n\nwith\nnew\nlines'],
+            [rstrip_str, 'text    \n    \nwith whitespaces     ', 'text\n\nwith whitespaces'],
+        ]
+        for cleaner, source, dest in cleaners_map:
+            self.assertEqual(util.get_body_cleaner(cleaner)(user, source), dest)
+            self.assertEqual(util.get_body_cleaner(cleaner)(staff, source), source)
+
+
 def _attach_perms_class(class_name):
     """
     override the permission handler. this cannot be done with @override_settings as
     permissions.perms is already imported at import point, instead we got to monkeypatch
     the modules (not really nice, but only an issue in tests)
     """
-    pybb_views.perms = permissions.perms = permissions._resolve_class(class_name)
+    pybb_views.perms = permissions.perms = util.resolve_class(class_name)
 
 
 def _detach_perms_class():
     """
     reset permission handler (otherwise other tests may fail)
     """
-    pybb_views.perms = permissions.perms = permissions._resolve_class('pybb.permissions.DefaultPermissionHandler')
+    pybb_views.perms = permissions.perms = util.resolve_class('pybb.permissions.DefaultPermissionHandler')
 
 
 class CustomPermissionHandlerTest(TestCase, SharedTestModule):
@@ -1591,14 +1845,14 @@ class CustomPermissionHandlerTest(TestCase, SharedTestModule):
 
 
 class RestrictEditingHandler(permissions.DefaultPermissionHandler):
-        def may_create_topic(self, user, forum):
-            return False
+    def may_create_topic(self, user, forum):
+        return False
 
-        def may_create_post(self, user, topic):
-            return False
+    def may_create_post(self, user, topic):
+        return False
 
-        def may_edit_post(self, user, post):
-            return False
+    def may_edit_post(self, user, post):
+        return False
 
 
 class LogonRedirectTest(TestCase, SharedTestModule):
@@ -1703,4 +1957,36 @@ class LogonRedirectTest(TestCase, SharedTestModule):
         # allowed user is allowed
         r = self.get_with_user(edit_post_url, 'staff', 'staff')
         self.assertEquals(r.status_code, 200)
+        
+    def test_profile_autocreation_signal_on(self):
+        user = User.objects.create_user('cronos', 'cronos@localhost', 'cronos')
+        profile = getattr(user, defaults.PYBB_PROFILE_RELATED_NAME, None)
+        self.assertIsNotNone(profile)
+        self.assertEqual(type(profile), util.get_pybb_profile_model())
+        user.delete()
 
+    def test_profile_autocreation_middleware(self):
+        user = User.objects.create_user('cronos', 'cronos@localhost', 'cronos')
+        getattr(user, defaults.PYBB_PROFILE_RELATED_NAME).delete()
+        #just display a page : the middleware should create the profile
+        self.get_with_user('/', 'cronos', 'cronos')
+        user = User.objects.get(username='cronos')
+        profile = getattr(user, defaults.PYBB_PROFILE_RELATED_NAME, None)
+        self.assertIsNotNone(profile)
+        self.assertEqual(type(profile), util.get_pybb_profile_model())
+        user.delete()
+
+    def test_user_delete_cascade(self):
+        user = User.objects.create_user('cronos', 'cronos@localhost', 'cronos')
+        profile = getattr(user, defaults.PYBB_PROFILE_RELATED_NAME, None)
+        self.assertIsNotNone(profile)
+        post = Post(topic=self.topic, user=user, body='I \'ll be back')
+        post.save()
+        user_pk = user.pk
+        profile_pk = profile.pk
+        post_pk = post.pk
+
+        user.delete()
+        self.assertFalse(User.objects.filter(pk=user_pk).exists())
+        self.assertFalse(Profile.objects.filter(pk=profile_pk).exists())
+        self.assertFalse(Post.objects.filter(pk=post_pk).exists())
